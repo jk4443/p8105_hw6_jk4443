@@ -115,7 +115,7 @@ baby_df %>%
 ## Problem 3
 
 ```{r}
-weather_df = 
+weather_df =
   rnoaa::meteo_pull_monitors(
     c("USW00094728"),
     var = c("PRCP", "TMIN", "TMAX"), 
