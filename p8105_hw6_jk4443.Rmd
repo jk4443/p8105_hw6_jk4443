@@ -27,14 +27,13 @@ options(
 scale_color_discrete = scale_colour_viridis_d
 scale_fill_discrete = scale_fill_viridis_d
 
-set.seed(1)
 ```
 
 ## Problem 1
 
 ```{r}
 homicide_df =
-  read_csv("data/homicide-data.csv",na = c("", "NA", "Unknown")) %>%
+  read_csv("data/homicide-data.csv", na = c("", "NA", "Unknown")) %>%
   mutate(
     city_state = str_c(city, state, sep = ","),
     victim_age = as.numeric(victim_age),
@@ -44,7 +43,8 @@ homicide_df =
       disposition == "Closed by arrest" ~1)
     ) %>%
   filter(city_state != "Tulsa, AL") %>% 
-  select(city_state, resolution, victim_age, victim_race, victim_sex)
+  select(city_state, resolution, victim_age, victim_race, victim_sex) %>% 
+  drop_na()
 ```
 
 ```{r}
@@ -55,7 +55,7 @@ baltimore_df =
 glm(resolution ~ victim_age + victim_race + victim_sex,
     data = baltimore_df,
     family = binomial()) %>% 
-  broom::tidy()
+  broom::tidy() %>% 
 mutate(
   OR = exp(estimate),
   CI_lower = exp(estimate - 1.96 * std.error),
@@ -104,14 +104,114 @@ baby_df =
 ```
 
 ```{r}
-model_fit = lm(bwt ~ gaweeks, data = baby_df)
+baby_df %>% 
+  mutate(
+    babysex = as.factor(case_when(
+      babysex == 1 ~ "male",
+      babysex == 2 ~ "female")),
+    malform = as.factor(case_when(
+      malform == 0 ~ "absent",
+      malform == 1 ~ "present")),
+    frace = as.factor(case_when(
+      frace == 1 ~ "white",
+      frace == 2 ~ "black",
+      frace == 3 ~ "asian",
+      frace == 4 ~ "puertorican",
+      frace == 8 ~ "other",
+      frace == 9 ~ "unknwon")),
+    mrace = as.factor(case_when(
+      mrace == 1 ~ "white",
+      mrace == 2 ~ "black",
+      mrace == 3 ~ "asian",
+      mrace == 4 ~ "puertorican",
+      mrace == 8 ~ "other",
+      mrace == 9 ~ "unknwon"))
+  )
+```
+
+
+```{r}
+model_fit = lm(bwt ~ bhead, + blength, data = baby_df)
+```
+
+```{r}
+broom::glance(model_fit)
+broom::tidy(model_fit)
 ```
 
 ```{r}
 baby_df %>% 
   modelr::add_residuals(model_fit) %>% 
-  ggplot(aes(x = gaweeks, y = resid)) +
+  add_predictions(model_fit) %>% 
+  ggplot(aes(x = bhead, y = resid, color = bhead)) +
   geom_point()
+```
+
+```{r}
+baby_df %>% 
+  modelr::add_residuals(model_fit) %>%
+  add_predictions(model_fit) %>% 
+  ggplot(aes(x = blength, y = resid, color = blength)) +
+  geom_point()
+```
+
+I decided to use baby's length at birth and the baby's head circumference to see how these two affect the birth weight of the baby at birth. 
+
+```{r}
+model_fit1 = lm(bwt ~ gaweeks + blength, data = baby_df)
+model_fit2 = lm(bwt ~ babysex + bhead + blength + (bhead * blength) + (bhead * babysex) + (babysex * bhead) + (babysex * bhead* blength),  data = baby_df)
+```
+
+```{r}
+broom::glance(model_fit1)
+broom::tidy(model_fit1)
+broom::glance(model_fit2)
+broom::tidy(model_fit2)
+```
+
+```{r}
+baby_df %>%
+  gather_predictions(model_fit, model_fit1, model_fit2) %>%
+  ggplot(aes(x = blength, y = bwt)) +
+  geom_point(alpha = .3) +
+  geom_line(aes(y = pred), color = "red") +
+  facet_grid(~ model)
+```
+
+```{r}
+set.seed(1)
+cv_df =
+  crossv_mc(baby_df,100) %>%
+  mutate(train = map(train, as_tibble),
+         test = map(test, as_tibble))
+```
+
+```{r}
+cv_df %>% 
+  mutate(
+    model_fit = map(train, ~ lm(bwt ~ bhead, + blength, data = .x)),
+    model_fit1 = map(train, ~ lm(bwt ~ gaweeks + blength, data = .x)),
+    model_fit2 = map(train, ~ lm(bwt ~ babysex + bhead + blength + (bhead * blength) + (bhead * babysex) + (babysex * bhead) + (babysex * bhead* blength),  data = .x))
+  ) %>%
+  
+  mutate(
+    rmse_fit = map2_dbl(model_fit, test, ~ rmse(model = .x, data = .y)),
+    rmse_fit1 = map2_dbl(model_fit1, test, ~ rmse(model = .x, data = .y)),
+    rmse_fit2 = map2_dbl(model_fit2, test, ~ rmse(model = .x, data = .y))
+  )
+```
+
+```{r}
+cv_df %>%
+  select(starts_with("rmse")) %>%
+  pivot_longer(
+    everything(),
+    names_to = "model",
+    values_to = "rmse",
+    names_prefix = "rmse_"
+  ) %>%
+  ggplot(aes(x = model, y = rmse)) + 
+  geom_violin()
 ```
 
 
@@ -129,5 +229,64 @@ weather_df =
     tmin = tmin / 10,
     tmax = tmax / 10) %>%
   select(name, id, everything())
+```
+
+```{r}
+boot_sample = function(weather_df) {
+  sample_frac(weather_df, replace = TRUE)
+}
+```
+
+```{r}
+log_estimates = function(weather_df) {
+  lm(tmax ~ tmin, data = weather_df) %>%
+    broom::tidy() %>%
+    pull(estimate) %>%
+    cumprod(.) %>%
+    tail(., n = 1) %>%
+    log(.)
+    }
+```
+
+```{r}
+r2 = function(weather_df) {
+  summary(lm(tmax ~ tmin, data = df))$r.squared
+}
+```
+
+```{r}
+boot_strap =
+  tibble(
+    strap_number = 1:5000,
+    strap_sample = rerun(5000, boot_sample(weather_df)))
+```
+
+```{r}
+boot_results_df = 
+  boot_strap %>%
+  mutate(
+    log_intercepts = map_dbl(strap_sample, log_estimates),
+    squared_r = map_dbl(strap_sample, r2)
+  )
+```
+
+```{r}
+rsquared_plot = boot_results_df %>%
+  ggplot(aes(x = squared_r)) + geom_density() 
+```
+
+```{r}
+logs_plot = boot_results_df %>%
+  ggplot(aes(x = log_intercepts)) + geom_density()
+```
+
+```{r}
+CI = 
+  boot_results_df %>%
+  group_by(term) %>%
+  summarize(
+    CI_lower = quantile(estimate, 0.025),
+    CI_upper = quantile(estimate, 0.975)
+  )
 ```
 
